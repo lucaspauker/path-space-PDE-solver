@@ -673,6 +673,9 @@ class EllipticSolver():
                 X_boundary[pt.tensor(b.astype(float)).bool()] = self.problem.X_corner
 
 
+            if self.loss_method == 'td':
+                if self.boundary_type == 'Dirichlet':
+                    loss += self.alpha[1] * pt.mean((self.V(X_boundary).squeeze())**2)
             if self.loss_method not in ['BSDE-4', 'BSDE'] and self.boundary_loss:
                 if self.boundary_type == 'Dirichlet':
                     loss += self.alpha[1] * pt.mean((self.V(X_boundary).squeeze() - self.problem.g(X_boundary))**2)
@@ -709,7 +712,7 @@ class EllipticSolver():
 
             X = pt.autograd.Variable(X, requires_grad=True)
             Y = pt.zeros(self.K).to(self.device)
-            if self.loss_method in ['BSDE-2', 'BSDE-4', 'BSDE', 'diffusion']:
+            if self.loss_method in ['BSDE-2', 'BSDE-4', 'BSDE', 'diffusion', 'td']:
                 Y = self.V(X).squeeze()
 
             #lambda_log.append(lambda_(X)[0].item())
@@ -735,7 +738,7 @@ class EllipticSolver():
                 if K_selection == 0:
                     break
 
-                V_L2[selection] += ((self.V(X[selection]).squeeze() - pt.tensor(self.problem.v_true(X[selection].detach())).float().squeeze())**2).detach().cpu() * self.delta_t_np
+                V_L2[selection.cpu()] += ((self.V(X[selection]).squeeze() - pt.tensor(self.problem.v_true(X[selection].detach())).float().squeeze())**2).detach().cpu() * self.delta_t_np
 
                 c = pt.zeros(self.d, self.K).to(self.device)
                 if self.adaptive_forward_process is True:
@@ -746,7 +749,7 @@ class EllipticSolver():
                 X_proposal = (X + ((self.problem.b(X) + pt.mm(self.problem.sigma(X), c).t()) * self.delta_t
                      + pt.mm(self.problem.sigma(X), xi.t()).t() * self.sq_delta_t) * selection.float().unsqueeze(1).repeat(1, self.d))
 
-                hitting_times[selection] += 1
+                hitting_times[selection.cpu()] += 1
                 if self.problem.boundary == 'sphere':
                     new_selection = pt.all(pt.sqrt(pt.sum(X**2, 1)).unsqueeze(1) < self.problem.boundary_distance, 1).to(self.device)
                 elif self.problem.boundary == 'two_spheres':
@@ -773,7 +776,7 @@ class EllipticSolver():
                 X = (X * (~new_selection | stopped).float().unsqueeze(1).repeat(1, self.d)
                      + X_proposal * (new_selection & ~stopped).float().unsqueeze(1).repeat(1, self.d))
 
-                if self.loss_method in ['BSDE', 'diffusion']:
+                if self.loss_method in ['BSDE', 'diffusion', 'td']:
                     K_count += pt.sum(new_selection & ~stopped)
 
                 if pt.sum(~new_selection & ~stopped) > 0:
@@ -784,7 +787,7 @@ class EllipticSolver():
                                                                  - pt.sum(Z * c.t(), 1)) * self.delta_t 
                                      - pt.sum(Z * xi, 1) * self.sq_delta_t)**2 * (new_selection & ~stopped).float())
 
-            if self.loss_method == 'diffusion':
+            if self.loss_method in ['diffusion', 'td']:
                 if self.variance_moment_split:
                     loss += self.alpha[0] * (pt.var(self.V(X).squeeze() - Y) + pt.mean((self.V(X[:1, :]).squeeze() - Y[:1])**2))
                     #loss += self.alpha[0] * (pt.var(self.V(X).squeeze() - Y) + pt.mean(self.V(X[:10, :]).squeeze() - Y[:10])**2)
