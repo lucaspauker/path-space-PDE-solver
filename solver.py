@@ -673,9 +673,6 @@ class EllipticSolver():
                 X_boundary[pt.tensor(b.astype(float)).bool()] = self.problem.X_corner
 
 
-            if self.loss_method == 'td':
-                if self.boundary_type == 'Dirichlet':
-                    loss += self.alpha[1] * pt.mean((self.V(X_boundary).squeeze())**2)
             if self.loss_method not in ['BSDE-4', 'BSDE'] and self.boundary_loss:
                 if self.boundary_type == 'Dirichlet':
                     loss += self.alpha[1] * pt.mean((self.V(X_boundary).squeeze() - self.problem.g(X_boundary))**2)
@@ -768,6 +765,8 @@ class EllipticSolver():
                 if self.loss_method in ['BSDE-2', 'BSDE-4']:
                     Y = (Y + ((- self.problem.h(X, Y, Z) #- lambda_(X) * Y_.squeeze() #  lambda_(X) 
                                + pt.sum(Z * c.t(), 1)) * self.delta_t + pt.sum(Z * xi, 1) * self.sq_delta_t) * (new_selection & ~stopped).float())
+                elif self.loss_method == 'td':
+                    Y = (Y + (- self.problem.h(X, Y_.squeeze(), Z) * (new_selection & ~stopped).float())
                 else:
                     Y = (Y + ((- self.problem.h(X, Y_.squeeze(), Z) #- lambda_(X) * Y_.squeeze() #  lambda_(X) 
                                + pt.sum(Z * c.t(), 1)) * self.delta_t + pt.sum(Z * xi, 1) * self.sq_delta_t) * (new_selection & ~stopped).float())
