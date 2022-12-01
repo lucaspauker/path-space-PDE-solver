@@ -501,7 +501,7 @@ class Solver():
             if self.log_gradient is True:
                 grads = [params.grad for params in list(filter(lambda params: params.requires_grad, self.z_n.parameters()))
                         if params.grad is not None]
-                grads_flat = pt.zeros(self.p)        
+                grads_flat = pt.zeros(self.p)
                 i = 0
                 for grad in grads:
                     grad_flat = grad.reshape(-1)
@@ -634,7 +634,7 @@ class EllipticSolver():
             self.train_PINN()
             return None
 
-        if self.loss_method == 'new':
+        if self.loss_method == 'new' or self.loss_method == 'nnew':
             self.train_new()
             return None
 
@@ -833,9 +833,8 @@ class EllipticSolver():
                           (l, self.loss_log[-1], self.V_L2_log[-1], n, K_selection, self.K, np.mean(self.times[-self.print_every:])))
 
     def train_new(self):
-
-        pt.manual_seed(self.seed)
-        np.random.seed(self.seed)
+        LL = 10
+        MM = int(self.K / LL)
 
         for l in range(self.L):
 
@@ -869,7 +868,21 @@ class EllipticSolver():
                     X = self.problem.boundary_distance * X / pt.sqrt(pt.sum(X**2, 1)).unsqueeze(1) * (pt.rand(self.K).unsqueeze(1)).to(self.device)
                 else:
                     # Here, X is initialized to be a random point inside the sphere
-                    X = pt.randn(self.K, self.problem.d).to(self.device)
+                    # For the new method, all Xs are the same
+                    if self.loss_method == 'new':
+                        # Old scheme
+                        X = pt.randn(self.K, self.problem.d).to(self.device)
+                    else:
+                        X = pt.randn(self.K, self.problem.d).to(self.device)
+                        for i in range(LL):
+                            for j in range(MM):
+                                X[i * MM + j] = X[i * MM]
+                            #if i == 0:
+                            #    X = pt.ones(MM, self.problem.d).to(self.device) * np.random.normal()
+                            #else:
+                            #    piece = pt.ones(MM, self.problem.d).to(self.device) * np.random.normal()
+                            #    X = pt.cat([X, piece])
+                        # X = pt.ones(self.K, self.problem.d).to(self.device) * np.random.normal()
                     X = self.problem.boundary_distance * X / pt.sqrt(pt.sum(X**2, 1)).unsqueeze(1) * (pt.rand(self.K).unsqueeze(1)**(1 / self.problem.d)).to(self.device)
 
             X = pt.autograd.Variable(X, requires_grad=True)
@@ -926,7 +939,16 @@ class EllipticSolver():
             if self.variance_moment_split:
                 loss += self.alpha[0] * (pt.var(self.V(X).squeeze() - Y) + pt.mean((self.V(X[:1, :]).squeeze() - Y[:1])**2))
             else:
-                loss += self.alpha[0] * pt.mean((self.V(X).squeeze() - Y)**2)
+                if self.loss_method == 'new':
+                    loss += self.alpha[0] * pt.mean((self.V(X).squeeze() - Y)**2)
+                else:
+                    #loss += self.alpha[0] * pt.mean((self.V(X).squeeze() - Y)**2)
+                    #losses = []
+                    for i in range(LL):
+                        loss += self.alpha[0] * (pt.mean(self.V(X).squeeze()[i*MM : (i+1)*MM] - Y[i*MM : (i+1)*MM])**2 / MM)
+                        #print(pt.mean(self.V(X).squeeze()[i*MM : (i+1)*MM] - Y[i*MM : (i+1)*MM]))
+                        #losses.append(float((pt.mean(self.V(X).squeeze()[i*MM : (i+1)*MM] - Y[i*MM : (i+1)*MM]))**2))
+                    #loss += self.alpha[0] * np.mean(losses)
 
             self.K_log.append(K_count.item())
 
