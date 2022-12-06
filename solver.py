@@ -560,10 +560,10 @@ class Solver():
 class EllipticSolver():
 
     def __init__(self, problem, name, seed=42, delta_t=0.01, N=50, lr=0.001, L=100000, K=200, K_boundary=50,
-                 alpha=[1.0, 1.0], adaptive_forward_process=False, detach_forward=True, print_every=100, verbose=True, 
+                 alpha=[1.0, 1.0], adaptive_forward_process=False, detach_forward=True, print_every=100, verbose=True,
                  approx_method='Y', sample_center=False, loss_method='diffusion', loss_with_stopped=False, K_test_log=None,
                  PINN_log_variance=False, log_loss_parts=False, boundary_loss=True, boundary_type='Dirichlet',
-                 variance_moment_split=False, full_hessian=False, uniform_square=False):
+                 variance_moment_split=False, full_hessian=False, uniform_square=False, delta_t_error=0.0):
         self.problem = problem
         self.name = name
         self.date = date.today().strftime('%Y-%m-%d')
@@ -572,6 +572,7 @@ class EllipticSolver():
         # hyperparameters
         self.device = pt.device('cuda')
         self.seed = seed
+        self.delta_t_error = delta_t_error
         self.delta_t_np = delta_t
         self.delta_t = pt.tensor(self.delta_t_np).to(self.device) # step size
         self.sq_delta_t = pt.sqrt(self.delta_t).to(self.device)
@@ -877,12 +878,6 @@ class EllipticSolver():
                         for i in range(LL):
                             for j in range(MM):
                                 X[i * MM + j] = X[i * MM]
-                            #if i == 0:
-                            #    X = pt.ones(MM, self.problem.d).to(self.device) * np.random.normal()
-                            #else:
-                            #    piece = pt.ones(MM, self.problem.d).to(self.device) * np.random.normal()
-                            #    X = pt.cat([X, piece])
-                        # X = pt.ones(self.K, self.problem.d).to(self.device) * np.random.normal()
                     X = self.problem.boundary_distance * X / pt.sqrt(pt.sum(X**2, 1)).unsqueeze(1) * (pt.rand(self.K).unsqueeze(1)**(1 / self.problem.d)).to(self.device)
 
             X = pt.autograd.Variable(X, requires_grad=True)
@@ -896,6 +891,16 @@ class EllipticSolver():
 
             # Run K trajectories N steps
             for n in range(self.N):
+                err = np.random.normal(scale=self.delta_t_error)
+                if self.delta_t_np + err < 0.0001: err = self.delta_t_np - 0.0001
+                delta_t_np = err + self.delta_t_np
+                delta_t = pt.tensor(err + self.delta_t_np).to(self.device)
+                delta_t_sqrt = pt.tensor(pt.sqrt(delta_t)).to(self.device)
+                #print(err, self.delta_t_np + 0.0001)
+                #print(delta_t_np, self.delta_t_np)
+                #print(delta_t, self.delta_t)
+                #print(delta_t_sqrt, self.sq_delta_t)
+
                 Y_ = self.V(X)
                 Y_eval = Y_.squeeze().sum()
                 Y_eval.backward(retain_graph=True)
@@ -909,7 +914,7 @@ class EllipticSolver():
                 if K_selection == 0:
                     break
 
-                V_L2[selection.cpu()] += ((self.V(X[selection]).squeeze() - pt.tensor(self.problem.v_true(X[selection].detach())).float().squeeze())**2).detach().cpu() * self.delta_t_np
+                V_L2[selection.cpu()] += ((self.V(X[selection]).squeeze() - pt.tensor(self.problem.v_true(X[selection].detach())).float().squeeze())**2).detach().cpu() * delta_t_np
 
                 c = pt.zeros(self.d, self.K).to(self.device)
                 if self.adaptive_forward_process is True:
@@ -917,15 +922,14 @@ class EllipticSolver():
                 if self.detach_forward is True:
                     c = c.detach()
 
-                X_proposal = (X + ((self.problem.b(X) + pt.mm(self.problem.sigma(X), c).t()) * self.delta_t
-                     + pt.mm(self.problem.sigma(X), xi.t()).t() * self.sq_delta_t) * selection.float().unsqueeze(1).repeat(1, self.d))
+                X_proposal = (X + ((self.problem.b(X) + pt.mm(self.problem.sigma(X), c).t()) * delta_t
+                     + pt.mm(self.problem.sigma(X), xi.t()).t() * delta_t_sqrt) * selection.float().unsqueeze(1).repeat(1, self.d))
 
                 hitting_times[selection.cpu()] += 1
                 if self.problem.boundary == 'sphere':
                     new_selection = pt.all(pt.sqrt(pt.sum(X**2, 1)).unsqueeze(1) < self.problem.boundary_distance, 1).to(self.device)
 
-                # TODO: change this probably
-                Y = (Y + ((- self.problem.h(X, Y_.squeeze(), Z) + pt.sum(Z * c.t(), 1)) * self.delta_t + pt.sum(Z * xi, 1) * self.sq_delta_t) * (new_selection & ~stopped).float())
+                Y = (Y + ((- self.problem.h(X, Y_.squeeze(), Z) + pt.sum(Z * c.t(), 1)) * delta_t + pt.sum(Z * xi, 1) * delta_t_sqrt) * (new_selection & ~stopped).float())
 
                 X_ = X
                 X = (X * (~new_selection | stopped).float().unsqueeze(1).repeat(1, self.d)
@@ -942,13 +946,8 @@ class EllipticSolver():
                 if self.loss_method == 'new':
                     loss += self.alpha[0] * pt.mean((self.V(X).squeeze() - Y)**2)
                 else:
-                    #loss += self.alpha[0] * pt.mean((self.V(X).squeeze() - Y)**2)
-                    #losses = []
                     for i in range(LL):
                         loss += self.alpha[0] * (pt.mean(self.V(X).squeeze()[i*MM : (i+1)*MM] - Y[i*MM : (i+1)*MM])**2 / MM)
-                        #print(pt.mean(self.V(X).squeeze()[i*MM : (i+1)*MM] - Y[i*MM : (i+1)*MM]))
-                        #losses.append(float((pt.mean(self.V(X).squeeze()[i*MM : (i+1)*MM] - Y[i*MM : (i+1)*MM]))**2))
-                    #loss += self.alpha[0] * np.mean(losses)
 
             self.K_log.append(K_count.item())
 
